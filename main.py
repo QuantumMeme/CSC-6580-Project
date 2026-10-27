@@ -1,30 +1,40 @@
 #!/usr/bin/env python3
 
 import sys
+
+from capstone import CS_ARCH_X86, CS_MODE_64, Cs
 from elftools.elf.elffile import ELFFile, ELFError
 
-class TextSectionError(Exception):
-    pass
 
 def error(msg) -> None:
     """Print an error message."""
     print(f"ERROR: {msg}")
 
+
 def disassemble(elf: ELFFile) -> None:
+    """
+    Disassemble ELF file and extracts .text section.
+    """
+
+    # https://www.capstone-engine.org/lang_python.html
+    md = Cs(CS_ARCH_X86, CS_MODE_64)  # Capstone object(architecture, mode)
+    md.detail = True
+
     text = elf.get_section_by_name(".text")
     if text is None:
-        raise TextSectionError()
+        raise ELFError("No .text section")
 
     code: bytes = text.data()
     address: int = text["sh_addr"]
 
+    for i in md.disasm(code, address):
+        print(f"{i.address:x}\t {i.mnemonic}\t {i.op_str}")
+
 
 def main() -> int:
-    """Entry point when run from the prompt. The only
-    argument should be the path to the ELF file."""
     if len(sys.argv) != 2:
         print(f"usage: {sys.argv[0]} [path to ELF file]")
-        return 0
+        return -1
     try:
         with open(sys.argv[1], "rb") as file:
             elf = ELFFile(file)
@@ -38,9 +48,8 @@ def main() -> int:
         error("Cannot read file")
     except ELFError as err:
         error(f"Invalid ELF file: {err}")
-    except TextSectionError:
-        error("No .text section")
     return -1
+
 
 if __name__ == "__main__":
     sys.exit(main())
