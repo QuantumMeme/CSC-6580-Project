@@ -90,3 +90,20 @@ Disassembly of section .text:
 106a: lea rcx,[rip+0xef] # 1160 <__libc_csu_init>
 ```
 
+## Second Assignment
+
+Create a program, written in Python, that operates as follows.
+- Require exactly one command line argument that must specify an ELF executable
+containing object code.
+- Open the given ELF file and locate the entry point by any method. Consider this
+the start location.
+- Locate the section that contains the start location. It need not be named .text.
+- Determine if the program has a "standard" entry point that invokes
+__libc_start_main. If it does, change start to the address of the main
+function.
+- Extract the basic block at start. Identify any basic block leaders as you do, and
+then extract those basic blocks. This process of leader discovery and basic block
+extraction continues until no further basic blocks are found. Consider only basic
+blocks whose location is known and that are within the ELF file.
+- Print each basic block once, in ascending order by the first address. Skip a single
+blank line between basic blocks.

@@ -10,7 +10,7 @@ def error(msg) -> None:
     print(f"ERROR: {msg}")
 
 
-def disassemble(elf: ELFFile) -> None:
+def disassemble_text(elf: ELFFile) -> None:
     """
     Disassemble ELF file and extracts .text section.
     """
@@ -38,19 +38,21 @@ def print_entry(elf: ELFFile) -> None:
     entrypoint = elf.header["e_entry"]
     print(f"Entrypoint @ 0x{entrypoint:x}\n")
 
-    found = False
+    target_section = None
     for section in elf.iter_sections():
-        addr = section["sh_addr"]
-        size = section["sh_size"]
+        addr: int = section["sh_addr"]
+        size: int = section["sh_size"]
 
         if addr <= entrypoint < (addr + size):
             print(f"Name: {section.name}\tAddr: {addr:x}\tSize: {size}b")
-            found = True
+            target_section = section
             break
 
-    if not found:
+    if not target_section:
         raise ELFError("No entrypoint found.")
 
+    section_data: bytes = target_section.data()
+    offset: int = entrypoint - target_section["sh_addr"]
 
 def main() -> int:
     if len(sys.argv) != 2:
@@ -59,7 +61,7 @@ def main() -> int:
     try:
         with open(sys.argv[1], "rb") as file:
             elf = ELFFile(file)
-            #disassemble(elf)
+            # disassemble_text(elf)
             print_entry(elf)
         return 0
     except FileNotFoundError:
