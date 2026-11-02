@@ -2,8 +2,13 @@
 
 import sys
 
-from capstone import CS_ARCH_X86, CS_MODE_64, Cs
+from capstone import CS_ARCH_X86, CS_MODE_64, Cs, CsInsn, CS_GRP_CALL, CS_GRP_JUMP, CS_GRP_RET
 from elftools.elf.elffile import ELFFile, ELFError
+from typing import List, Tuple
+
+
+# instruction groups that end blocks
+BLOCK_TERMS = [CS_GRP_CALL, CS_GRP_JUMP, CS_GRP_RET]
 
 def error(msg) -> None:
     """Print an error message."""
@@ -53,6 +58,50 @@ def print_entry(elf: ELFFile) -> None:
 
     section_data: bytes = target_section.data()
     offset: int = entrypoint - target_section["sh_addr"]
+    current_address: int = entrypoint
+
+    block_list: List[Tuple[int, List[CsInsn]]] = []
+    block: List[CsInsn] = []
+
+    while offset < len(section_data):
+
+        chunk = section_data[offset:offset + 15] # x86 instructions are 15b
+
+        insns = list(md.disasm(chunk, current_address, count=1))
+
+        if not insns:
+            offset += 1
+            current_address += 1
+            continue
+
+        insn = insns[0]
+        block.append(insn)
+
+        # checking if instruction is a block terminator
+        end = False
+        for g in insn.groups:
+            if g in BLOCK_TERMS:
+                end = True
+                break
+
+        offset += insn.size
+        current_address += insn.size
+
+        if end:
+            block_list.append((block[0].address, block))
+            block = []
+
+    if block:
+        block_list.append((block[0].address, block))
+
+    # TODO test if this works how i think it does
+    block_list.sort()
+
+    for i in block_list:
+        print(f"\n--------\nStart 0x{i[0]:x}\n--------\n")
+        for j in i[1]:
+            print(f"{j.address:x}\t {j.mnemonic}\t {j.op_str}")
+
 
 def main() -> int:
     if len(sys.argv) != 2:
