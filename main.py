@@ -4,6 +4,7 @@ import sys
 
 from capstone import CS_ARCH_X86, CS_MODE_64, Cs
 from elftools.elf.elffile import ELFFile, ELFError
+from elftools.elf.sections import SymbolTableSection
 
 ####################
 # Error logging
@@ -37,12 +38,24 @@ def disassemble(elf: ELFFile) -> dict:
     for i in md.disasm(code, address):
         # print(f"{i.address:#06x}\t {i.mnemonic}\t {i.op_str}")
         addr_key = f"{i.address:#016x}"
+
+        ## TODO: Maybe we can save the op_str with #016x padding
+        ##          if mnemonic in [jmp, call, ...] ops. 
         disassembly_dict[addr_key] = {
             "mnemonic": i.mnemonic,
             "op_str": i.op_str
         }
 
     return disassembly_dict
+
+
+####################
+def symbol_table(elf:ELFFile) -> dict:
+    symtab = elf.get_section_by_name('.symtab')
+    if not isinstance(symtab, SymbolTableSection):
+        return None
+    return symtab
+    
 
 
 ####################
@@ -54,8 +67,7 @@ def block_slice(elf:ELFFile, disasm:dict) -> dict:
     bb_dict = {}
     
     # find entry point with 0 padding
-    entry = f"{elf.header.e_entry:#016x}"
-    
+    entry = f"{elf['e_entry']:#016x}" 
     # Convert dictionary keys to a list to enable index lookup and slicing
     addrs = list(disasm.keys())
     
@@ -101,7 +113,23 @@ def main() -> int:
             for addr, info in basic_block_dict.items():
                 # Highlight the entry point row for clarity
                 print(f"{addr}\t {info['mnemonic']}\t {info['op_str']}")    
-        
+            
+            # for key in basic_block_dict.keys():
+            #    print(f"Key: {key}, Type: {type(key)}")
+            
+            # print(f"DWARF_INFO: {elf.get_dwarf_info}")
+            
+
+            print("\n--------- MAIN -----------")
+            sym_table = symbol_table(elf)
+            if sym_table is not None:
+                main = sym_table.get_symbol_by_name('main')
+                if main is not None:
+                    print(f"main -> {main[0]['st_value']:#016x}, size -> {main[0]['st_size']}")
+                else:
+                    print("Main not found")
+            else:
+                print("Symbol Table  not found")
         return 0
     except FileNotFoundError:
         error(f"File not found ({sys.argv[1]})")
