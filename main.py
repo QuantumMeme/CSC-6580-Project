@@ -5,12 +5,14 @@ import sys
 from capstone import CS_ARCH_X86, CS_MODE_64, Cs
 from elftools.elf.elffile import ELFFile, ELFError
 
-
+####################
 # Error logging
 def error(msg) -> None:
     """Print an error message."""
     print(f"ERROR: {msg}")
 
+
+####################
 # disassemble binary code:
 ##  I/P: ELFFile Obj
 ##  O/P: DICT of disassembled ops
@@ -34,7 +36,7 @@ def disassemble(elf: ELFFile) -> dict:
     disassembly_dict = {}
     for i in md.disasm(code, address):
         # print(f"{i.address:#06x}\t {i.mnemonic}\t {i.op_str}")
-        addr_key = f"{i.address:#06x}"
+        addr_key = f"{i.address:#016x}"
         disassembly_dict[addr_key] = {
             "mnemonic": i.mnemonic,
             "op_str": i.op_str
@@ -42,16 +44,36 @@ def disassemble(elf: ELFFile) -> dict:
 
     return disassembly_dict
 
-def block_slice(disasm:dict) -> dict:
+
+####################
+def block_slice(elf:ELFFile, disasm:dict) -> dict:
     """
     Create basic-block slices 
     Return: `dict` of control-flow
     """
-    basic_blocks_dict = {}
+    bb_dict = {}
     
+    # find entry point with 0 padding
+    entry = f"{elf.header.e_entry:#016x}"
+    
+    # Convert dictionary keys to a list to enable index lookup and slicing
+    addrs = list(disasm.keys())
+    
+    if entry in addrs:
+        start_idx = addrs.index(entry)
+        # Slice from the entry point up to the next 10 instructions
+        end_idx = min(start_idx + 11, len(addrs))
+        
+        for idx in range(start_idx, end_idx):
+            addr = addrs[idx]
+            bb_dict[addr] = disasm[addr]
+    else:
+        print(f"Entry point {entry} not found in disassembly dict")
+
+
     ## TODO: 
 
-    return basic_blocks_dict
+    return bb_dict
 
 
 def main() -> int:
@@ -60,12 +82,26 @@ def main() -> int:
         return -1
     try:
         with open(sys.argv[1], "rb") as file:
+            # read ELF binary
             elf = ELFFile(file)
+            
+            # Disassemble code section
             disassembly_dict =  disassemble(elf)
+            
+            # basic block slicing
+            basic_block_dict = block_slice(elf, disassembly_dict)
 
             # print disassemble code
+            print("\n--------------------- DISASM ---------------")
             for addr, info in disassembly_dict.items():
                 print(f"{addr}\t {info['mnemonic']}\t {info['op_str']}")
+            
+    
+            print("\n--------------------- ENTRY & NEXT 10 INSTRUCTIONS ---------------")
+            for addr, info in basic_block_dict.items():
+                # Highlight the entry point row for clarity
+                print(f"{addr}\t {info['mnemonic']}\t {info['op_str']}")    
+        
         return 0
     except FileNotFoundError:
         error(f"File not found ({sys.argv[1]})")
