@@ -86,32 +86,35 @@ def discover_basic_blocks(elf: ELFFile, md: Cs, start: int):
 
             address = next_address
 
-    blocks = {}
+        blocks = {}
+        assigned = set()
 
-    for leader in sorted(leaders):
-        if leader not in instructions:
-            continue
+        for leader in sorted(leaders):
+            if leader not in instructions:
+                continue
 
-        block = []
-        address = leader
+            block = []
+            address = leader
 
-        while address in instructions:
-            instruction = instructions[address]
-            block.append(instruction)
+            while address in instructions and address not in assigned:
+                instruction = instructions[address]
+                block.append(instruction)
+                assigned.add(address)
 
-            if address in endings:
-                break
+                if address in endings:
+                    break
 
-            next_address = address + instruction.size
+                next_address = address + instruction.size
 
-            if next_address in leaders:
-                break
+                if next_address in leaders:
+                    break
 
-            address = next_address
+                address = next_address
 
-        blocks[leader] = block
+            if block:
+                blocks[leader] = block
 
-    return blocks
+        return blocks
 
 def disassemble(elf: ELFFile) -> None:
     """Discover and print basic blocks from an ELF executable."""
@@ -122,7 +125,7 @@ def disassemble(elf: ELFFile) -> None:
     entry_point = elf.header["e_entry"]
     start_address = entry_point
 
-        # Identify the standard C runtime startup sequence.
+    # Identify the standard C runtime startup sequence.
     address = entry_point
     main_address = None
     startup_call = False
@@ -133,12 +136,16 @@ def disassemble(elf: ELFFile) -> None:
         if instruction is None:
             break
 
-        if instruction.mnemonic == "lea" and len(instruction.operands) == 2:
+        if len(instruction.operands) == 2:
             dest, src = instruction.operands
 
             if dest.type == X86_OP_REG and dest.reg == X86_REG_RDI:
-                if src.type == X86_OP_MEM and src.mem.base == X86_REG_RIP:
-                    main_address = instruction.address + instruction.size + src.mem.disp
+                if instruction.mnemonic == "lea" and src.type == X86_OP_MEM:
+                    if src.mem.base == X86_REG_RIP:
+                        main_address = instruction.address + instruction.size + src.mem.disp
+
+                elif instruction.mnemonic == "mov" and src.type == X86_OP_IMM:
+                    main_address = src.imm
 
         if instruction.mnemonic == "call":
             next_address = instruction.address + instruction.size
