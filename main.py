@@ -82,7 +82,7 @@ def make_cs(elf:ELFFile):
 
 #######################################
 # Finding code sections that may or may not be in .text 
-def code_regions(elf:ELFFIle):
+def code_regions(elf:ELFFile):
     """
     Return every executable, file-backed piece of the program as a list of
         (start, end, data, name).  Code may live in several sections
@@ -273,9 +273,9 @@ def find_start(elf, md, regs, names):
                 if find_region(regs, rdi) is not None:
                     return rdi
                 # else we fall back to "main" symbol
-                main = next((a for a, n in names.items() if n == "main"), None)
-                if find_region(regs, main) is not None:
-                    return main
+                main_sym = next((a for a, n in names.items() if n == "main"), None)
+                if find_region(regs, main_sym) is not None:
+                    return main_sym
             break
         
         # if there is Jump/return/hlt, we are not in _start
