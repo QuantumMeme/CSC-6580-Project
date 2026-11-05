@@ -90,3 +90,56 @@ Disassembly of section .text:
 106a: lea rcx,[rip+0xef] # 1160 <__libc_csu_init>
 ```
 
+## Second Assignment
+
+Requirements:
+
+* Exactly one command line argument specifying an ELF executable containing object code.
+* Open the ELF file and locate its entry point.
+* Identify the section containing the entry point. The section does not have to be named `.text`.
+* If the executable uses the standard C runtime startup sequence that invokes `__libc_start_main`, identify the address of the `main` function and use it as the starting address.
+* Extract basic blocks using Capstone, identifying new basic block leaders through control-flow instructions.
+* Continue discovering basic blocks until no additional reachable blocks are found.
+* Support basic blocks located in different executable sections.
+* Follow direct jumps and calls. Resolving indirect calls is not required.
+* Print each basic block once, sorted in ascending order by its starting address.
+* Separate basic blocks with a single blank line.
+
+### Installation
+
+Install the required Python dependencies using `requirements.txt`:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Example Execution
+
+Run the program against an ELF executable:
+
+```sh
+python3 ./main.py /usr/bin/ls
+```
+
+To save the output to a file:
+
+```sh
+python3 ./main.py /usr/bin/ls > output.txt
+```
+
+Example output:
+
+```text
+0x46b0: endbr64
+0x46b4: jmp qword ptr [rip + 0x1e8d6]
+
+0x46c0: endbr64
+0x46c4: jmp qword ptr [rip + 0x1e8ee]
+
+0x46d0: endbr64
+0x46d4: jmp qword ptr [rip + 0x1e8fe]
+```
+
+The program uses `pyelftools` to read ELF information and Capstone to disassemble x86-64 instructions. Basic blocks are discovered by following control flow and are printed in ascending address order.

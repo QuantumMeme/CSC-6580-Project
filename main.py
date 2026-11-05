@@ -3,33 +3,168 @@
 import sys
 
 from capstone import CS_ARCH_X86, CS_MODE_64, Cs
-from elftools.elf.elffile import ELFFile, ELFError
+from capstone.x86_const import X86_OP_IMM, X86_OP_MEM, X86_OP_REG, X86_REG_RDI, X86_REG_RIP
+from elftools.elf.constants import SH_FLAGS
+from elftools.elf.elffile import ELFError, ELFFile
 
 
 def error(msg) -> None:
     """Print an error message."""
     print(f"ERROR: {msg}")
 
+def get_instruction(elf: ELFFile, md: Cs, address: int):
+    """Find and disassemble one instruction at the given address."""
+
+    for section in elf.iter_sections():
+        if not section["sh_flags"] & SH_FLAGS.SHF_EXECINSTR:
+            continue
+
+        if section["sh_type"] == "SHT_NOBITS":
+            continue
+
+        start = section["sh_addr"]
+        end = start + section["sh_size"]
+
+        if start <= address < end:
+            code = section.data()[address - start:]
+            instructions = list(md.disasm(code, address, count=1))
+
+            if instructions:
+                return instructions[0]
+
+    return None
+
+def discover_basic_blocks(elf: ELFFile, md: Cs, start: int):
+    """Discover reachable instructions and organize them into basic blocks."""
+
+    pending = [start]
+    instructions = {}
+    leaders = {start}
+    endings = set()
+
+    while pending:
+        address = pending.pop()
+
+        while address not in instructions:
+            instruction = get_instruction(elf, md, address)
+
+            if instruction is None:
+                break
+
+            instructions[address] = instruction
+            next_address = instruction.address + instruction.size
+            mnemonic = instruction.mnemonic
+
+            if mnemonic.startswith("j") or mnemonic.startswith("loop"):
+                endings.add(address)
+
+                if instruction.operands and instruction.operands[0].type == X86_OP_IMM:
+                    target = instruction.operands[0].imm
+
+                    if get_instruction(elf, md, target) is not None:
+                        leaders.add(target)
+                        pending.append(target)
+
+                if mnemonic != "jmp":
+                    if get_instruction(elf, md, next_address) is not None:
+                        leaders.add(next_address)
+                        pending.append(next_address)
+
+                break
+
+            if mnemonic == "call":
+                if instruction.operands and instruction.operands[0].type == X86_OP_IMM:
+                    target = instruction.operands[0].imm
+
+                    if get_instruction(elf, md, target) is not None:
+                        leaders.add(target)
+                        pending.append(target)
+
+            if mnemonic in ("ret", "retf", "hlt", "ud2"):
+                endings.add(address)
+                break
+
+            address = next_address
+
+    blocks = {}
+
+    for leader in sorted(leaders):
+        if leader not in instructions:
+            continue
+
+        block = []
+        address = leader
+
+        while address in instructions:
+            instruction = instructions[address]
+            block.append(instruction)
+
+            if address in endings:
+                break
+
+            next_address = address + instruction.size
+
+            if next_address in leaders:
+                break
+
+            address = next_address
+
+        blocks[leader] = block
+
+    return blocks
 
 def disassemble(elf: ELFFile) -> None:
-    """
-    Disassemble ELF file and extracts .text section.
-    """
+    """Discover and print basic blocks from an ELF executable."""
 
-    # https://www.capstone-engine.org/lang_python.html
-    md = Cs(CS_ARCH_X86, CS_MODE_64)  # Capstone object(architecture, mode)
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
     md.detail = True
 
-    text = elf.get_section_by_name(".text")
-    if text is None:
-        raise ELFError("No .text section")
+    entry_point = elf.header["e_entry"]
+    start_address = entry_point
 
-    code: bytes = text.data()
-    address: int = text["sh_addr"]
+        # Identify the standard C runtime startup sequence.
+    address = entry_point
+    main_address = None
+    startup_call = False
 
-    for i in md.disasm(code, address):
-        print(f"{i.address:x}\t {i.mnemonic}\t {i.op_str}")
+    for _ in range(30):
+        instruction = get_instruction(elf, md, address)
 
+        if instruction is None:
+            break
+
+        if instruction.mnemonic == "lea" and len(instruction.operands) == 2:
+            dest, src = instruction.operands
+
+            if dest.type == X86_OP_REG and dest.reg == X86_REG_RDI:
+                if src.type == X86_OP_MEM and src.mem.base == X86_REG_RIP:
+                    main_address = instruction.address + instruction.size + src.mem.disp
+
+        if instruction.mnemonic == "call":
+            next_address = instruction.address + instruction.size
+            next_instruction = get_instruction(elf, md, next_address)
+
+            if next_instruction is not None and next_instruction.mnemonic == "hlt":
+                startup_call = True
+
+            break
+
+        if instruction.mnemonic in ("jmp", "ret", "hlt"):
+            break
+
+        address = instruction.address + instruction.size
+
+    if startup_call and main_address is not None:
+        if get_instruction(elf, md, main_address) is not None:
+            start_address = main_address
+
+    blocks = discover_basic_blocks(elf, md, start_address)
+
+    for address in sorted(blocks):
+        for instruction in blocks[address]:
+            print(f"0x{instruction.address:x}: {instruction.mnemonic} {instruction.op_str}".rstrip())
+
+        print()
 
 def main() -> int:
     if len(sys.argv) != 2:
