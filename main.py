@@ -18,6 +18,11 @@ NORETURN = {"__libc_start_main", "exit", "_exit", "_Exit", "abort",
             "__chk_fail", "err", "errx", "pthread_exit", "longjmp",
             "__cxa_throw", "_Unwind_Resume"}
 
+# Predicate detection
+LOOPS = {X86_INS_LOOP, X86_INS_LOOPE, X86_INS_LOOPNE}
+COND_JUMPS =  {X86_INS_JCXZ, X86_INS_JECXZ, X86_INS_JRCXZ}
+
+LOOP_IS_PREDICATE = False
 
 ####################
 # Error logging
@@ -245,10 +250,11 @@ def call_target(insn, names):
 ###################################
 # conditional blocks
 ###############################
-LOOPS = {X86_INS_LOOP, X86_INS_LOOPE, X86_INS_LOOPNE, X86_INS_JCXZ, X86_INS_JECXZ, X86_INS_JRCXZ}
 def is_conditional(insn):
     """ True for jcc, loop*, j*cxz: predicate detection"""
     if insn.id in LOOPS:
+        return LOOP_IS_PREDICATE
+    if insn.id in COND_JUMPS:
         return True
     return insn.group(CS_GRP_JUMP) and insn.id not in (X86_INS_JMP, X86_INS_LJMP)
 
@@ -321,23 +327,26 @@ def control_flow(insn, names):
     successors -> leaders: 
     """
     nxt = insn.address + insn.size  # next instruciton
+    
+    # loop: also matches CS_GRP_JMP, so filter out first
+    if insn.id in LOOPS and not LOOP_IS_PREDICATE:
+        return False, []
 
     # ret/iret/htl/ud2: block ends
     if insn.group(CS_GRP_RET) or insn.group(CS_GRP_IRET) or insn.id in (X86_INS_HLT, X86_INS_UD2):
         return True, []
 
-    # call: the block ends-> {callee, ret_addr} are leaders
+    # call: the block continues -> callee is new  leaders
+    # No return calls end the block
     if insn.group(CS_GRP_CALL):
         _, target, name = call_target(insn, names)
         succ = [target] if target is not None else [] # indirect: not a target
-        #if name not in NORETURN:
-        #    succ.append(nxt)
-        #return True, succ 
         return name in NORETURN, succ
 
     # jmp, jcc, loops: the block ends
     # Direct target is leader
-    if insn.group(CS_GRP_JUMP) or insn.id in LOOPS:
+    # NOTE: important when LOOP_IS_PREDICATE flag is set
+    if insn.group(CS_GRP_JUMP) or insn.id in LOOPS or insn.id in COND_JUMPS:
         _, target, _ = call_target(insn, names)
         succ = [target] if target is not None else []
         if is_conditional(insn):    # more detailed conditional INSN check using ID
