@@ -22,7 +22,8 @@ NORETURN = {"__libc_start_main", "exit", "_exit", "_Exit", "abort",
 LOOPS = {X86_INS_LOOP, X86_INS_LOOPE, X86_INS_LOOPNE}
 COND_JUMPS =  {X86_INS_JCXZ, X86_INS_JECXZ, X86_INS_JRCXZ}
 
-LOOP_IS_PREDICATE = False
+#LOOP_IS_PREDICATE = False
+LOOP_IS_PREDICATE = True
 
 ####################
 # Error logging
