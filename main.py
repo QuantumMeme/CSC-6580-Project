@@ -18,6 +18,12 @@ NORETURN = {"__libc_start_main", "exit", "_exit", "_Exit", "abort",
             "__chk_fail", "err", "errx", "pthread_exit", "longjmp",
             "__cxa_throw", "_Unwind_Resume"}
 
+# Predicate detection
+LOOPS = {X86_INS_LOOP, X86_INS_LOOPE, X86_INS_LOOPNE}
+COND_JUMPS =  {X86_INS_JCXZ, X86_INS_JECXZ, X86_INS_JRCXZ}
+
+#LOOP_IS_PREDICATE = False
+LOOP_IS_PREDICATE = True
 
 ####################
 # Error logging
@@ -75,7 +81,6 @@ def make_cs(elf:ELFFile):
 
     md = Cs(arch, mode) # Capstone object(architecture, mode)
     md.detail = True    # for groups and operands
-    md.skipdata = True  # linear sweep: emit .byte and keep going
     
     return md
 
@@ -109,7 +114,7 @@ def code_regions(elf:ELFFile):
     if not regs:
         for seg in elf.iter_segments():
             if seg["p_type"] == "PT_LOAD" and seg["p_flags"] & 1:   # PF_X
-                start = seg["p_addr"]
+                start = seg["p_vaddr"]
                 # Only the part present in the file (p_filesz) is real code
                 data = seg.data()[:seg["p_filesz"]]
                 regs.append((start, start + len(data), data, "segment@0x%x" % start))
@@ -241,7 +246,20 @@ def call_target(insn, names):
         return "indirect", None, names.get(mem_address(insn, op))
     # Indirect through a register: nothing known.
     return "indirect", None, None
- 
+
+
+###################################
+# conditional blocks
+###############################
+def is_conditional(insn):
+    """ True for jcc, loop*, j*cxz: predicate detection"""
+    if insn.id in LOOPS:
+        return LOOP_IS_PREDICATE
+    if insn.id in COND_JUMPS:
+        return True
+    return insn.group(CS_GRP_JUMP) and insn.id not in (X86_INS_JMP, X86_INS_LJMP)
+
+
 #########################################
 # Entry point
 #########################
@@ -310,26 +328,29 @@ def control_flow(insn, names):
     successors -> leaders: 
     """
     nxt = insn.address + insn.size  # next instruciton
+    
+    # loop: also matches CS_GRP_JMP, so filter out first
+    if insn.id in LOOPS and not LOOP_IS_PREDICATE:
+        return False, []
 
     # ret/iret/htl/ud2: block ends
     if insn.group(CS_GRP_RET) or insn.group(CS_GRP_IRET) or insn.id in (X86_INS_HLT, X86_INS_UD2):
         return True, []
 
-    # call: the block ends-> {callee, ret_addr} are leaders
+    # call: the block continues -> callee is new  leaders
+    # No return calls end the block
     if insn.group(CS_GRP_CALL):
         _, target, name = call_target(insn, names)
         succ = [target] if target is not None else [] # indirect: not a target
-        if name not in NORETURN:
-            succ.append(nxt)
-        return True, succ 
-
+        return name in NORETURN, succ
 
     # jmp, jcc, loops: the block ends
     # Direct target is leader
-    if insn.group(CS_GRP_JUMP):
+    # NOTE: important when LOOP_IS_PREDICATE flag is set
+    if insn.group(CS_GRP_JUMP) or insn.id in LOOPS or insn.id in COND_JUMPS:
         _, target, _ = call_target(insn, names)
         succ = [target] if target is not None else []
-        if insn.id not in  (X86_INS_JMP, X86_INS_LJMP):     # conditional jumps
+        if is_conditional(insn):    # more detailed conditional INSN check using ID
             succ.append(nxt) 
         return True, succ
 
@@ -363,13 +384,15 @@ def extract_blocks(md, regs, start, names):
                 break
 
             ends, succ = control_flow(insn, names)
+            # 'call' returns (False, [callee]): the block continues
+            # but the callee is still a new leader
+            # Keep each successor within the ELF's code
+            # targets outside ELF are dropped
+            for s in succ:
+                if find_region(regs, s) is not None and s not in leaders:
+                    leaders.add(s)
+                    work.append(s)
             if ends: 
-                # Keep each successor within the ELF's code
-                # targets outside ELF are dropped
-                for s in succ:
-                    if find_region(regs, s) is not None and s not in leaders:
-                        leaders.add(s)
-                        work.append(s)
                 # block ends
                 break
 
@@ -405,6 +428,78 @@ def extract_blocks(md, regs, start, names):
 
 
 ##################################
+# Printing
+################################
+def next_L(insn, names):
+    """
+    What the block's last instruction assigns to L.
+        predicate -> (then_L, else_L)
+        fucntion -> single int (0 when unknown address)
+    """
+    nxt = insn.address + insn.size
+
+    # if predicate jump
+    if is_conditional(insn):
+        target = call_target(insn, names)[1]
+        return (target if target is not None else 0, nxt)
+
+    # if we reach a END (ret, hlt, etc)
+    if insn.group(CS_GRP_RET) or insn.group(CS_GRP_IRET) or insn.id in (X86_INS_HLT, X86_INS_UD2):
+        return 0
+    
+    # if call operations do not return ever
+    if insn.group(CS_GRP_CALL) and call_target(insn, names)[2] in NORETURN:
+        return 0
+
+    # if unconditional jump
+    if insn.id in (X86_INS_JMP, X86_INS_LJMP):
+        op = insn.operands[0]
+        if op.type == X86_OP_IMM:
+            return op.imm & MASK64
+        if op.type == X86_OP_MEM:
+            addr = mem_address(insn, op)
+            return addr if addr is not None else 0
+        # jump to unknown locations: eg; jmp rax
+        return 0
+    return nxt          # block ran into the next leader
+
+###########################3
+def fmt(insn, indent=""):
+    return ("%s0x%x:\t%s\t%s" % (indent, insn.address, insn.mnemonic, insn.op_str)).rstrip()
+
+###########################
+def print_primes(blocks, names):
+    """
+    Print each block by address:
+        either as a seq 
+        or as a  if-then-else prime
+    """
+    first = True
+    for lead in sorted(blocks):
+        
+        ## new line break 
+        if not first:
+            print()
+        
+        first = False
+        block = blocks[lead]
+        L = next_L(block[-1], names) # last insn of block
+        if isinstance(L, tuple):    #predicate
+            print("if")
+            for insn in block:
+                print(fmt(insn, "\t"))
+            print("then")
+            print("\tL := 0x%x" % L[0])
+            print("else")
+            print("\tL := 0x%x" % L[1])
+            print("fi")
+        else:
+            for insn in block:
+                print(fmt(insn))
+            print("L := 0x%x" % L)
+
+
+
 def print_basic_blocks(blocks, names):
     """
     Print extracted basic blocks in:
@@ -470,7 +565,8 @@ def main() -> int:
         return 1
     
     # S6: Print basic blocks 
-    print_basic_blocks(blocks, names)
+    # print_basic_blocks(blocks, names)
+    print_primes(blocks, names)
     return 0
 
 if __name__ == "__main__":
