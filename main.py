@@ -357,15 +357,19 @@ def control_flow(insn, names):
     # if none of the above cases: block continues
     return False, []
 
-def extract_blocks(md, regs, start, names):
+def extract_blocks(md, regs, start, names, extra_leaders=None):
     """
-    Extract block at start -> collect leaders --> extract leader blocks.
-    Only target ELF's code regions.
+    Extract blocks starting at the entry point and any additional leaders.
     """
     cache = {}
-    leaders = {start}   # every known block start address
-    work = [start]      # leaders still not explored
-    seen = set()        # leaders already explored
+    leaders = {start}
+
+    for addr in extra_leaders or []:
+        if find_region(regs, addr) is not None:
+            leaders.add(addr)
+
+    work = list(leaders)    # leaders still not explored
+    seen = set()            # leaders already explored
 
     # First pass: leader discovery pass
     while work:
@@ -457,8 +461,7 @@ def next_L(insn, names):
         if op.type == X86_OP_IMM:
             return op.imm & MASK64
         if op.type == X86_OP_MEM:
-            addr = mem_address(insn, op)
-            return addr if addr is not None else 0
+            return 0
         # jump to unknown locations: eg; jmp rax
         return 0
     return nxt          # block ran into the next leader
@@ -468,37 +471,64 @@ def fmt(insn, indent=""):
     return ("%s0x%x:\t%s\t%s" % (indent, insn.address, insn.mnemonic, insn.op_str)).rstrip()
 
 ###########################
-def print_primes(blocks, names):
-    """
-    Print each block by address:
-        either as a seq 
-        or as a  if-then-else prime
-    """
+def print_primes(primes):
+    """Print nested sequence and predicate primes in address order."""
+
+    def print_value(value, indent=""):
+        if isinstance(value, dict):
+            print_prime(value, indent)
+        else:
+            print("%sL := 0x%x" % (indent, value))
+
+    def print_prime(prime, indent=""):
+        if prime["type"] == "predicate":
+            print(indent + "if")
+
+            for insn in prime["instructions"]:
+                print(fmt(insn, indent + "\t"))
+
+            print(indent + "then")
+            print_value(prime["then"], indent + "\t")
+            print(indent + "else")
+            print_value(prime["else"], indent + "\t")
+            print(indent + "fi")
+        else:
+            for insn in prime["instructions"]:
+                print(fmt(insn, indent))
+
+            print_value(prime["next"], indent)
+
     first = True
-    for lead in sorted(blocks):
-        
-        ## new line break 
+
+    for addr in sorted(primes):
         if not first:
             print()
-        
+
         first = False
-        block = blocks[lead]
-        L = next_L(block[-1], names) # last insn of block
-        if isinstance(L, tuple):    #predicate
-            print("if")
-            for insn in block:
-                print(fmt(insn, "\t"))
-            print("then")
-            print("\tL := 0x%x" % L[0])
-            print("else")
-            print("\tL := 0x%x" % L[1])
-            print("fi")
+        print_prime(primes[addr])
+
+def build_primes(blocks, names):
+    """Convert basic blocks into sequence and predicate primes."""
+    primes = {}
+
+    for lead, block in blocks.items():
+        L = next_L(block[-1], names)
+
+        if isinstance(L, tuple):
+            primes[lead] = {
+                "type": "predicate",
+                "instructions": block,
+                "then": L[0],
+                "else": L[1]
+            }
         else:
-            for insn in block:
-                print(fmt(insn))
-            print("L := 0x%x" % L)
+            primes[lead] = {
+                "type": "sequence",
+                "instructions": block,
+                "next": L
+            }
 
-
+    return primes
 
 def print_basic_blocks(blocks, names):
     """
@@ -525,12 +555,90 @@ def print_basic_blocks(blocks, names):
             # rstrip() drops the trailing tab for operand-less instructions.
             print(line.rstrip())
 
+def count_references(primes):
+    """Count references to each prime through assignments to L."""
+    counts = {}
+
+    def visit(value):
+        if isinstance(value, dict):
+            if value["type"] == "predicate":
+                visit(value["then"])
+                visit(value["else"])
+            else:
+                visit(value["next"])
+        elif value != 0:
+            counts[value] = counts.get(value, 0) + 1
+
+    for prime in primes.values():
+        visit(prime)
+
+    return counts
+
+def references_address(prime, addr):
+    """Check whether a prime references its own address."""
+
+    def visit(value):
+        if isinstance(value, int):
+            return value == addr
+
+        if value["type"] == "predicate":
+            return visit(value["then"]) or visit(value["else"])
+
+        return visit(value["next"])
+
+    return visit(prime)
+
+def substitute_primes(primes, start):
+    """Inline primes referenced exactly once until no more substitutions are possible."""
+
+    def replace(value, target, replacement):
+        if isinstance(value, int):
+            return replacement if value == target else value
+
+        if value["type"] == "predicate":
+            value["then"] = replace(value["then"], target, replacement)
+            value["else"] = replace(value["else"], target, replacement)
+        else:
+            value["next"] = replace(value["next"], target, replacement)
+
+        return value
+
+    while True:
+        counts = count_references(primes)
+        changed = False
+
+        for addr in sorted(primes):
+            if addr == start or counts.get(addr, 0) != 1:
+                continue
+
+            if references_address(primes[addr], addr):
+                continue
+
+            replacement = primes.pop(addr)
+
+            for prime in primes.values():
+                replace(prime, addr, replacement)
+
+            changed = True
+            break
+
+        if not changed:
+            break
+
+    return primes
+
 
 ##################################
 def main() -> int:
     # Exactly one command line argument: the ELF executable.
-    if len(sys.argv) != 2:
-        sys.stderr.write("usage: %s <elf-executable>\n" % sys.argv[0])
+    if len(sys.argv) < 2:
+        sys.stderr.write("usage: %s <elf-executable> [block-leaders...]\n" % sys.argv[0])
+        return 1
+
+    try:
+        extra_leaders = [int(addr, 0) for addr in sys.argv[2:]]
+    except ValueError:
+        sys.stderr.write("error: block leaders must be valid addresses\n")
         return 1
     try:
         # The file must stay open while pyelftools reads section data.
@@ -543,30 +651,29 @@ def main() -> int:
             regs = code_regions(elf)              
             # S3: symbol table for mapping addresses
             names = build_symbol_map(elf, md, regs) 
-            # S4: find correct start point
-            start = find_start(elf, md, regs, names)        
+            # S4: find correct start point        
             # S5: extract basic blocks
-            blocks = extract_blocks(md, regs, start, names)
-    except (OSError, ValueError) as exc:
-        # Missing file, wrong architecture, bad entry point.
+            if extra_leaders:
+                start = min(extra_leaders)
+                blocks = extract_blocks(md, regs, start, names, extra_leaders)
+            else:
+                start = find_start(elf, md, regs, names)
+                blocks = extract_blocks(md, regs, start, names)
+
+            if not blocks:
+                raise ValueError("No valid basic blocks found")
+    except (OSError, ValueError, ELFError) as exc:
         sys.stderr.write("error: %s\n" % exc)
         return 1
-    except FileNotFoundError:
-        error(f"File not found ({sys.argv[1]})")
-        return 1
-    except IsADirectoryError:
-        error("Provided path is a directory")
-        return 1
-    except PermissionError:
-        error("Cannot read file")
-        return 1
-    except ELFError as err:
-        error(f"Invalid ELF file: {err}")
-        return 1
-    
-    # S6: Print basic blocks 
-    # print_basic_blocks(blocks, names)
-    print_primes(blocks, names)
+        
+    # S6: Convert basic blocks into primes
+    primes = build_primes(blocks, names)
+
+    # S7: Substitute primes referenced exactly once
+    primes = substitute_primes(primes, start)
+
+    # S8: Print the remaining primes
+    print_primes(primes)
     return 0
 
 if __name__ == "__main__":

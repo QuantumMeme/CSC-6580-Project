@@ -1,9 +1,11 @@
 # CSC-6580-Project: Team "Hamilton"
-Team Members: 
-* Brian Kemp
-* David Pesin
-* Rajat Bisht
-* Behnjamin Barlow
+
+## Team Members
+
+- Brian Kemp
+- David Pesin
+- Rajat Bisht
+- Behnjamin Barlow
 
 ## Python
 
@@ -13,80 +15,117 @@ Team Members:
   * The [pyelftools](https://github.com/eliben/pyelftools): `sudo apt install python3-pyelftools`
 * Example 'starter' program that opens an ELF binary using `pyelftools`.
 
-```py
-#!/usr/bin/env python3
-# Example to open an ELF file.
+### Installation
 
-import sys
-from elftools.elf.elffile import ELFFile, ELFError
+Create and activate a Python virtual environment, then install the required dependencies:
 
-def error(msg) -> None:
-    # Print an error message
-    print(f"ERROR: {msg}")
-
-def open_elf(path:str) -> None:
-    # open the given file as an ELF file and report some info
-    with open(path, "rb") as file:
-        elf = ELFFile(file)
-        ## Do something with the file
-def main() -> int:
-    # Entry point when run from the prompt
-    # The only argument should be the path to the ELF file.
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} [Path to ELF file]") 
-        return 0
-    
-    try:
-        open_elf(argv[1])
-        return 0
-    except FileNotFoundError:
-        error(f"File not found ({sys.argv[1]})")
-    except IsADirectoryError:
-        error(f"Provided path is a directory")
-    except PermissionError:
-        error(f"Cannot read file")
-    except ELFError as err:
-        error(f"Invalid ELF file: {err}")
-    return -1
-
-if __name__ == "__main__":
-    sys.exit(main())
-
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## First Assignment
-Requirements:
+## P1 – ELF Disassembly
 
-* Exactly one command line argument specifying an ELF executable containing object code (example above)
-* open(ELF-file) -> locate and extract `.text` section. (if not found, issue an error message using `pyelftools`, and stop)
-* Print a disassembly of code in `.text` section (using Capstone).
-* Example execution:
-```sh
-$ ./main.py hello | head -10
-0x0000000000001050: endbr64
-0x0000000000001054: xor ebp, ebp
-0x0000000000001056: mov r9, rdx
-0x0000000000001059: pop rsi
-0x000000000000105a: mov rdx, rsp
-0x000000000000105d: and rsp, 0xfffffffffffffff0
-0x0000000000001061: push rax
-0x0000000000001062: push rsp
-0x0000000000001063: lea r8, [rip + 0x166]
-0x000000000000106a: lea rcx, [rip + 0xef]
+The first project introduced ELF file parsing and x86-64 disassembly using Python.
 
-$ objdump -d -Mintel -j.text --no-show-raw-insn hello | head -17
-hello-main: file format elf64-x86-64
-Disassembly of section .text:
-0000000000001050 <_start>:
-1050: endbr64
-1054: xor ebp,ebp
-1056: mov r9,rdx
-1059: pop rsi
-105a: mov rdx,rsp
-105d: and rsp,0xfffffffffffffff0
-1061: push rax
-1062: push rsp
-1063: lea r8,[rip+0x166] # 11d0 <__libc_csu_fini>
-106a: lea rcx,[rip+0xef] # 1160 <__libc_csu_init>
+**Implementation:**
+
+- Accept an ELF executable as a command-line argument.
+- Open and parse the ELF file using `pyelftools`.
+- Locate and extract the `.text` section.
+- Disassemble the instructions in the `.text` section using Capstone.
+- Print instruction addresses, mnemonics, and operands.
+
+## P2 – Basic Block Extraction
+
+The second project extended the ELF disassembler to identify and extract basic blocks from executable code.
+
+**Implementation:**
+
+- Locate the ELF executable's entry point.
+- Identify the executable section containing the entry point, even if it is not named `.text`.
+- Detect standard C runtime startup code that invokes `__libc_start_main` and identify the `main` function when possible.
+- Extract basic blocks by following control-flow instructions and discovering additional block leaders.
+- Continue extracting reachable basic blocks until no additional blocks are found.
+- Support executable code located across multiple ELF sections.
+- Follow direct jumps and calls without requiring resolution of indirect calls.
+- Print the extracted basic blocks in ascending address order.
+
+## P3 – Structure Theorem and Prime Generation
+
+The third project extended basic block extraction by applying the constructive proof of the Structure Theorem.
+
+**Implementation:**
+
+- Continue identifying the program's starting address and extracting reachable basic blocks.
+- Classify basic blocks based on their ending instructions:
+  - **Predicate blocks:** Blocks ending in conditional branches, including instructions such as `jg`, `js`, and `loop`.
+  - **Function blocks:** All other basic blocks.
+- Convert function blocks into sequence primes.
+- Convert predicate blocks into `if-then-else` primes.
+- Introduce the counter variable `L` to represent the next block address.
+- Assign `L := 0x0` when the next address cannot be determined.
+- Print the resulting primes in ascending address order.
+- Preserve all primes without performing reductions or substitutions.
+
+## P4 – Prime Substitution and Basic Block Restructuring
+
+The fourth project builds on P3 by implementing prime substitution as described in the constructive proof of the Structure Theorem.
+
+**Implementation:**
+
+- Support optional basic block leader addresses supplied through command-line arguments.
+- Use the supplied leaders as starting points when provided; otherwise, automatically determine the program's starting address.
+- Extract reachable basic blocks from the specified starting points.
+- Convert basic blocks into sequence and predicate primes.
+- Store primes in an internal structure to support nested substitutions.
+- Count references to block addresses through assignments to `L`.
+- Substitute primes whose addresses are referenced exactly once.
+- Repeat substitutions until no additional substitutions are possible.
+- Preserve the initial block and prevent direct self-referencing substitutions.
+- Support nested sequence and `if-then-else` primes.
+- Preserve loop back-edges without constructing structured loops.
+- Print the remaining primes in ascending address order, including nested substitutions.
+- Report an error when no valid basic blocks are found.
+
+## Usage
+
+### Run with an ELF executable
+
+```bash
+python3 ./main.py /usr/bin/ls
 ```
 
+### Build the provided assembly test
+
+```bash
+nasm -f elf64 block-test-1.asm -o block-test-1.o
+gcc -no-pie block-test-1.o -o block-test-1
+```
+
+### Run with automatic starting-address detection
+
+```bash
+python3 ./main.py ./block-test-1
+```
+
+### Run with a specified basic block leader
+
+```bash
+python3 ./main.py ./block-test-1 0x401170
+```
+
+### Run with multiple basic block leaders
+
+```bash
+python3 ./main.py ./block-test-1 0x40113b 0x401170
+```
+
+### Save output to a file
+
+```bash
+python3 ./main.py /usr/bin/ls > output.txt
+```
+
+The program uses `pyelftools` to read ELF information and Capstone to disassemble x86-64 instructions. Basic blocks are discovered through control-flow analysis, converted into primes, and restructured through substitutions before the remaining primes are printed.
