@@ -434,7 +434,7 @@ def extract_blocks(md, regs, start, names, extra_leaders=None):
 ##################################
 # Printing
 ################################
-def next_L(insn, names):
+def next_L(insn, names, regs):
     """
     What the block's last instruction assigns to L.
         predicate -> (then_L, else_L)
@@ -445,7 +445,10 @@ def next_L(insn, names):
     # if predicate jump
     if is_conditional(insn):
         target = call_target(insn, names)[1]
-        return (target if target is not None else 0, nxt)
+        return (
+            target if find_region(regs, target) is not None else 0,
+            nxt if find_region(regs, nxt) is not None else 0
+        )
 
     # if we reach a END (ret, hlt, etc)
     if insn.group(CS_GRP_RET) or insn.group(CS_GRP_IRET) or insn.id in (X86_INS_HLT, X86_INS_UD2):
@@ -459,12 +462,13 @@ def next_L(insn, names):
     if insn.id in (X86_INS_JMP, X86_INS_LJMP):
         op = insn.operands[0]
         if op.type == X86_OP_IMM:
-            return op.imm & MASK64
+            target = op.imm & MASK64
+            return target if find_region(regs, target) is not None else 0
         if op.type == X86_OP_MEM:
             return 0
         # jump to unknown locations: eg; jmp rax
         return 0
-    return nxt          # block ran into the next leader
+    return nxt if find_region(regs, nxt) is not None else 0         # block ran into the next leader
 
 ###########################3
 def fmt(insn, indent=""):
@@ -507,12 +511,12 @@ def print_primes(primes):
         first = False
         print_prime(primes[addr])
 
-def build_primes(blocks, names):
+def build_primes(blocks, names, regs):
     """Convert basic blocks into sequence and predicate primes."""
     primes = {}
 
     for lead, block in blocks.items():
-        L = next_L(block[-1], names)
+        L = next_L(block[-1], names, regs)
 
         if isinstance(L, tuple):
             primes[lead] = {
@@ -574,12 +578,21 @@ def count_references(primes):
 
     return counts
 
-def references_address(prime, addr):
-    """Check whether a prime references its own address."""
+def references_address(prime, addr, primes=None, seen=None):
+    """Check whether a prime can reach an address through L references."""
+    if seen is None:
+        seen = set()
 
     def visit(value):
         if isinstance(value, int):
-            return value == addr
+            if value == addr:
+                return True
+
+            if primes is not None and value in primes and value not in seen:
+                seen.add(value)
+                return references_address(primes[value], addr, primes, seen)
+
+            return False
 
         if value["type"] == "predicate":
             return visit(value["then"]) or visit(value["else"])
@@ -611,7 +624,7 @@ def substitute_primes(primes, start):
             if addr == start or counts.get(addr, 0) != 1:
                 continue
 
-            if references_address(primes[addr], addr):
+            if references_address(primes[addr], addr, primes):
                 continue
 
             replacement = primes.pop(addr)
@@ -667,7 +680,7 @@ def main() -> int:
         return 1
         
     # S6: Convert basic blocks into primes
-    primes = build_primes(blocks, names)
+    primes = build_primes(blocks, names, regs)
 
     # S7: Substitute primes referenced exactly once
     primes = substitute_primes(primes, start)
