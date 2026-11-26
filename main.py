@@ -25,55 +25,6 @@ COND_JUMPS =  {X86_INS_JCXZ, X86_INS_JECXZ, X86_INS_JRCXZ}
 #LOOP_IS_PREDICATE = False
 LOOP_IS_PREDICATE = True
 
-####################
-# Error logging
-def error(msg) -> None:
-    """Print an error message."""
-    print(f"ERROR: {msg}")
-
-
-####################
-# disassemble binary code:
-##  I/P: ELFFile Obj
-##  O/P: DICT of disassembled ops
-def disassemble(elf: ELFFile) -> dict:
-    """
-    Disassemble ELF file and extracts .text section.
-    Return: `dict` of disassembled object codes
-    NOTE: Linear Sweep implemented here
-    """
-
-    # https://www.capstone-engine.org/lang_python.html
-    md = Cs(CS_ARCH_X86, CS_MODE_64)  # Capstone object(architecture, mode)
-    md.detail = True
-
-    text = elf.get_section_by_name(".text")
-    if text is None:
-        raise ELFError("No .text section")
-
-    code: bytes = text.data()
-    address: int = text["sh_addr"]
-
-    disassembly_dict = {}
-    for insn in md.disasm(code, address):
-        
-        ## should we make it int instead of string?
-        ## print("0x%x" %(insn.address))
-        addr_key = f"{insn.address:#016x}"  
-
-        ## TODO: Maybe we can save the op_str with #016x padding
-        ##          if mnemonic in [jmp, call, ...] ops. 
-        disassembly_dict[addr_key] = {
-            "mnemonic": insn.mnemonic,
-            "op_str": insn.op_str
-        }
-
-    return disassembly_dict
-
-
-####################
-
-##################################
 def make_cs(elf:ELFFile):
     """Create a Capstone disassembler for the ELF's architecture."""
     arch = CS_ARCH_X86
@@ -81,12 +32,12 @@ def make_cs(elf:ELFFile):
 
     md = Cs(arch, mode) # Capstone object(architecture, mode)
     md.detail = True    # for groups and operands
-    
+
     return md
 
 
 #######################################
-# Finding code sections that may or may not be in .text 
+# Finding code sections that may or may not be in .text
 def code_regions(elf:ELFFile):
     """
     Return every executable, file-backed piece of the program as a list of
@@ -94,14 +45,14 @@ def code_regions(elf:ELFFile):
         (.init, .plt, .plt.sec, .text, .fini, ...).
     """
     regs = []
-    
+
     for sec in elf.iter_sections():
         if not sec["sh_flags"] & SH_FLAGS.SHF_EXECINSTR:
             continue
-        
-        # empty sections or no-bytes (.bss) section 
+
+        # empty sections or no-bytes (.bss) section
         if sec["sh_type"] == "SHT_NOBITS" or sec["sh_size"]  == 0:
-            continue 
+            continue
 
         start = sec["sh_addr"]      # virt addr where it is loaded
         data = sec.data()
@@ -109,7 +60,7 @@ def code_regions(elf:ELFFile):
 
 
     # some binaries might be stripped of section names, so we can
-    # use program headers instead: loadable (PT_LOAD) segments 
+    # use program headers instead: loadable (PT_LOAD) segments
     # with execute permission (PF_X == 1)
     if not regs:
         for seg in elf.iter_segments():
@@ -118,7 +69,7 @@ def code_regions(elf:ELFFile):
                 # Only the part present in the file (p_filesz) is real code
                 data = seg.data()[:seg["p_filesz"]]
                 regs.append((start, start + len(data), data, "segment@0x%x" % start))
-    
+
     # sorting by start address
     regs.sort()
     return regs
@@ -171,8 +122,8 @@ def build_symbol_map(elf:ELFFile, md, regs) -> dict:
             if sym.name and sym["st_value"] and sym["st_info"]["type"] in ("STT_FUNC", "STT_GNU_IFUNC"):
                 # Strip version suffixes such as "@GLIBC_2.34".
                 names.setdefault(sym["st_value"], sym.name.split("@")[0])
-    
-    # GOT symbol names 
+
+    # GOT symbol names
     for sec in elf.iter_sections():
         if not isinstance(sec, RelocationSection) or not sec["sh_link"]:
             continue
@@ -275,7 +226,7 @@ def find_start(elf, md, regs, names):
     # locate the section that contains the e_entry
     if find_region(regs, start) is None:
         raise ValueError("Entry point 0x%x is not an executable code" %start)
-    
+
     # walk from the entry point to confirm we are not in _start
     cache, rdi, addr = {}, None, start
     for _ in range(64):     # _start is small, so capping it early
@@ -283,11 +234,11 @@ def find_start(elf, md, regs, names):
         if insn is None:
             break
         ops = insn.operands
-        
+
         # check first "call"
         if insn.group(CS_GRP_CALL):
             if call_target(insn, names)[2] == "__libc_start_main":
-                # std entry: cech 'rdi' 
+                # std entry: cech 'rdi'
                 if find_region(regs, rdi) is not None:
                     return rdi
                 # else we fall back to "main" symbol
@@ -295,7 +246,7 @@ def find_start(elf, md, regs, names):
                 if find_region(regs, main_sym) is not None:
                     return main_sym
             break
-        
+
         # if there is Jump/return/hlt, we are not in _start
         if insn.group(CS_GRP_JUMP) or insn.group(CS_GRP_RET) or insn.id == X86_INS_HLT:
             break
@@ -307,14 +258,14 @@ def find_start(elf, md, regs, names):
             if insn.id == X86_INS_MOV and src.type == X86_OP_IMM:
                 rdi = src.imm & MASK64
             # else if we load eff address: e.g lea rdi, [rip+disp]
-            elif insn.id == X86_INS_LEA: 
+            elif insn.id == X86_INS_LEA:
                 rdi = mem_address(insn, src)
             else:
                 rdi = None
-        
+
         # next instruction
         addr = insn.address + insn.size
-        
+
     # if neither _start, nor "main" found: return e_entry
     return start
 
@@ -325,10 +276,10 @@ def find_start(elf, md, regs, names):
 def control_flow(insn, names):
     """
     Returns: (end_block, successors) for one instruction
-    successors -> leaders: 
+    successors -> leaders:
     """
     nxt = insn.address + insn.size  # next instruciton
-    
+
     # loop: also matches CS_GRP_JMP, so filter out first
     if insn.id in LOOPS and not LOOP_IS_PREDICATE:
         return False, []
@@ -351,7 +302,7 @@ def control_flow(insn, names):
         _, target, _ = call_target(insn, names)
         succ = [target] if target is not None else []
         if is_conditional(insn):    # more detailed conditional INSN check using ID
-            succ.append(nxt) 
+            succ.append(nxt)
         return True, succ
 
     # if none of the above cases: block continues
@@ -374,7 +325,7 @@ def extract_blocks(md, regs, start, names, extra_leaders=None):
     # First pass: leader discovery pass
     while work:
         addr = work.pop()
-        
+
         # if already extracted
         if addr in seen:
             continue
@@ -396,7 +347,7 @@ def extract_blocks(md, regs, start, names, extra_leaders=None):
                 if find_region(regs, s) is not None and s not in leaders:
                     leaders.add(s)
                     work.append(s)
-            if ends: 
+            if ends:
                 # block ends
                 break
 
@@ -404,13 +355,13 @@ def extract_blocks(md, regs, start, names, extra_leaders=None):
             addr = insn.address + insn.size
             if addr in leaders:     # ran into another block
                 break
-    
+
     # Second Pass: block builder
     # running a block from leader till split
     blocks = {}
     for lead in sorted(leaders):
         block, addr = [], lead
-        
+
         while True:
             insn = decode(md, regs, addr, cache)
             if insn is None:
@@ -427,223 +378,78 @@ def extract_blocks(md, regs, start, names, extra_leaders=None):
 
         if block:
             blocks[lead] = block     # keyed in by first address
-    
+
     return blocks
 
+##################################
+# Register normalization
+##################################
+def normalize_register(reg):
+    """Normalize register names to their 64-bit equivalents."""
+
+    register_map = {
+        "al": "rax", "ah": "rax", "ax": "rax", "eax": "rax",
+        "bl": "rbx", "bh": "rbx", "bx": "rbx", "ebx": "rbx",
+        "cl": "rcx", "ch": "rcx", "cx": "rcx", "ecx": "rcx",
+        "dl": "rdx", "dh": "rdx", "dx": "rdx", "edx": "rdx",
+        "sil": "rsi", "si": "rsi", "esi": "rsi",
+        "dil": "rdi", "di": "rdi", "edi": "rdi",
+        "bpl": "rbp", "bp": "rbp", "ebp": "rbp",
+        "spl": "rsp", "sp": "rsp", "esp": "rsp",
+        "ip": "rip", "eip": "rip",
+        "flags": "rflags", "eflags": "rflags"
+    }
+
+    # Normalize traditional x86 registers.
+    if reg in register_map:
+        return register_map[reg]
+
+    # Normalize extended registers (r8-r15).
+    for i in range(8, 16):
+        if reg in (f"r{i}b", f"r{i}w", f"r{i}d"):
+            return f"r{i}"
+
+    # Registers that do not require normalization.
+    return reg
 
 ##################################
-# Printing
-################################
-def next_L(insn, names, regs):
-    """
-    What the block's last instruction assigns to L.
-        predicate -> (then_L, else_L)
-        fucntion -> single int (0 when unknown address)
-    """
-    nxt = insn.address + insn.size
+# Register access
+##################################
+def get_register_access(insn):
+    """Return normalized sets of registers read and written."""
 
-    # if predicate jump
-    if is_conditional(insn):
-        target = call_target(insn, names)[1]
-        return (
-            target if find_region(regs, target) is not None else 0,
-            nxt if find_region(regs, nxt) is not None else 0
-        )
+    regs_read, regs_written = insn.regs_access()
 
-    # if we reach a END (ret, hlt, etc)
-    if insn.group(CS_GRP_RET) or insn.group(CS_GRP_IRET) or insn.id in (X86_INS_HLT, X86_INS_UD2):
-        return 0
-    
-    # if call operations do not return ever
-    if insn.group(CS_GRP_CALL) and call_target(insn, names)[2] in NORETURN:
-        return 0
+    read = {normalize_register(insn.reg_name(reg)) for reg in regs_read}
+    written = {normalize_register(insn.reg_name(reg)) for reg in regs_written}
 
-    # if unconditional jump
-    if insn.id in (X86_INS_JMP, X86_INS_LJMP):
-        op = insn.operands[0]
-        if op.type == X86_OP_IMM:
-            target = op.imm & MASK64
-            return target if find_region(regs, target) is not None else 0
-        if op.type == X86_OP_MEM:
-            return 0
-        # jump to unknown locations: eg; jmp rax
-        return 0
-    return nxt if find_region(regs, nxt) is not None else 0         # block ran into the next leader
-
-###########################3
-def fmt(insn, indent=""):
-    return ("%s0x%x:\t%s\t%s" % (indent, insn.address, insn.mnemonic, insn.op_str)).rstrip()
-
-###########################
-def print_primes(primes):
-    """Print nested sequence and predicate primes in address order."""
-
-    def print_value(value, indent=""):
-        if isinstance(value, dict):
-            print_prime(value, indent)
-        else:
-            print("%sL := 0x%x" % (indent, value))
-
-    def print_prime(prime, indent=""):
-        if prime["type"] == "predicate":
-            print(indent + "if")
-
-            for insn in prime["instructions"]:
-                print(fmt(insn, indent + "\t"))
-
-            print(indent + "then")
-            print_value(prime["then"], indent + "\t")
-            print(indent + "else")
-            print_value(prime["else"], indent + "\t")
-            print(indent + "fi")
-        else:
-            for insn in prime["instructions"]:
-                print(fmt(insn, indent))
-
-            print_value(prime["next"], indent)
-
-    first = True
-
-    for addr in sorted(primes):
-        if not first:
-            print()
-
-        first = False
-        print_prime(primes[addr])
-
-def build_primes(blocks, names, regs):
-    """Convert basic blocks into sequence and predicate primes."""
-    primes = {}
-
-    for lead, block in blocks.items():
-        L = next_L(block[-1], names, regs)
-
-        if isinstance(L, tuple):
-            primes[lead] = {
-                "type": "predicate",
-                "instructions": block,
-                "then": L[0],
-                "else": L[1]
-            }
-        else:
-            primes[lead] = {
-                "type": "sequence",
-                "instructions": block,
-                "next": L
-            }
-
-    return primes
-
-def print_basic_blocks(blocks, names):
-    """
-    Print extracted basic blocks in:
-        * ascending order of addresses
-        * print one basic block only once
-        * skip a single line between blocks
-    """
-    first = True
-    for lead in sorted(blocks):
-        # Blank line *between* blocks (none before the first or after last).
-        if not first:
-            print()
-        first = False
-        for insn in blocks[lead]:
-            # Format: 0x401136:<TAB>mnemonic<TAB>operands
-            line = "0x%x:\t%s\t%s" % (insn.address, insn.mnemonic,
-                                      insn.op_str)
-            # For calls and jumps with a known name, appending " --> name".
-            if insn.group(CS_GRP_CALL) or insn.group(CS_GRP_JUMP):
-                name = call_target(insn, names)[2]
-                if name:
-                    line += " --> " + name
-            # rstrip() drops the trailing tab for operand-less instructions.
-            print(line.rstrip())
-
-def count_references(primes):
-    """Count references to each prime through assignments to L."""
-    counts = {}
-
-    def visit(value):
-        if isinstance(value, dict):
-            if value["type"] == "predicate":
-                visit(value["then"])
-                visit(value["else"])
-            else:
-                visit(value["next"])
-        elif value != 0:
-            counts[value] = counts.get(value, 0) + 1
-
-    for prime in primes.values():
-        visit(prime)
-
-    return counts
-
-def references_address(prime, addr, primes=None, seen=None):
-    """Check whether a prime can reach an address through L references."""
-    if seen is None:
-        seen = set()
-
-    def visit(value):
-        if isinstance(value, int):
-            if value == addr:
-                return True
-
-            if primes is not None and value in primes and value not in seen:
-                seen.add(value)
-                return references_address(primes[value], addr, primes, seen)
-
-            return False
-
-        if value["type"] == "predicate":
-            return visit(value["then"]) or visit(value["else"])
-
-        return visit(value["next"])
-
-    return visit(prime)
-
-def substitute_primes(primes, start):
-    """Inline primes referenced exactly once until no more substitutions are possible."""
-
-    def replace(value, target, replacement):
-        if isinstance(value, int):
-            return replacement if value == target else value
-
-        if value["type"] == "predicate":
-            value["then"] = replace(value["then"], target, replacement)
-            value["else"] = replace(value["else"], target, replacement)
-        else:
-            value["next"] = replace(value["next"], target, replacement)
-
-        return value
-
-    while True:
-        counts = count_references(primes)
-        changed = False
-
-        for addr in sorted(primes):
-            if addr == start or counts.get(addr, 0) != 1:
-                continue
-
-            if references_address(primes[addr], addr, primes):
-                continue
-
-            replacement = primes.pop(addr)
-
-            for prime in primes.values():
-                replace(prime, addr, replacement)
-
-            changed = True
-            break
-
-        if not changed:
-            break
-
-    return primes
-
+    return read, written
 
 ##################################
+# Live-on-entry analysis
+##################################
+def get_live_on_entry(block):
+    """Return registers read before being written in a basic block."""
+
+    live_on_entry = set()
+    written = set()
+
+    for insn in block:
+        regs_read, regs_written = get_register_access(insn)
+
+        # Registers read before being written are live on entry.
+        for reg in regs_read:
+            if reg not in written:
+                live_on_entry.add(reg)
+
+        # Track registers written by this instruction.
+        written.update(regs_written)
+
+    return live_on_entry
+
+
 def main() -> int:
-    # Exactly one command line argument: the ELF executable.
+    # Require an ELF executable; optional arguments are block leaders.
     if len(sys.argv) < 2:
         sys.stderr.write("usage: %s <elf-executable> [block-leaders...]\n" % sys.argv[0])
         return 1
@@ -659,12 +465,12 @@ def main() -> int:
             # open ELF file
             elf = ELFFile(f)
             # S1: create Capstone class obj
-            md = make_cs(elf)             
+            md = make_cs(elf)
             # S2: code regions (.txt, .start, etc.)
-            regs = code_regions(elf)              
+            regs = code_regions(elf)
             # S3: symbol table for mapping addresses
-            names = build_symbol_map(elf, md, regs) 
-            # S4: find correct start point        
+            names = build_symbol_map(elf, md, regs)
+            # S4: find correct start point
             # S5: extract basic blocks
             if extra_leaders:
                 start = min(extra_leaders)
@@ -678,16 +484,15 @@ def main() -> int:
     except (OSError, ValueError, ELFError) as exc:
         sys.stderr.write("error: %s\n" % exc)
         return 1
-        
-    # S6: Convert basic blocks into primes
-    primes = build_primes(blocks, names, regs)
 
-    # S7: Substitute primes referenced exactly once
-    primes = substitute_primes(primes, start)
+    # Print live-on-entry registers for each basic block.
+    for addr in sorted(blocks):
+        live_on_entry = get_live_on_entry(blocks[addr])
+        registers = ", ".join(sorted(live_on_entry))
+        print(f"0x{addr:08x}: {registers}".rstrip())
 
-    # S8: Print the remaining primes
-    print_primes(primes)
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
